@@ -1,0 +1,4 @@
+.idea
+frauddetection/*.iml
+frauddetection/target
+frauddetection/dependency-reduced-pom.xml
