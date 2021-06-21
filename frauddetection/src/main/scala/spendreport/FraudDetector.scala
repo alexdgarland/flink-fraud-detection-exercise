@@ -19,7 +19,6 @@
 package spendreport
 
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
-import org.apache.flink.api.common.typeinfo.Types
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.util.Collector
@@ -27,20 +26,37 @@ import org.apache.flink.walkthrough.common.entity.Alert
 import org.apache.flink.walkthrough.common.entity.Transaction
 
 object FraudDetector {
-  val SMALL_AMOUNT_THRESHOLD: Double = 1.00
-  val LARGE_AMOUNT_THRESHOLD: Double = 500.00
+  private val SMALL_AMOUNT_THRESHOLD: Double = 1.00
+  private val LARGE_AMOUNT_THRESHOLD: Double = 500.00
   val ONE_MINUTE: Long     = 60 * 1000L
+
+  implicit class ExtendedTransaction(t: Transaction) {
+    def isSmall: Boolean = t.getAmount < SMALL_AMOUNT_THRESHOLD
+    def isLarge: Boolean = t.getAmount > LARGE_AMOUNT_THRESHOLD
+    def createAlert: Alert = {
+      val alert = new Alert
+      alert.setId(t.getAccountId)
+      alert
+    }
+  }
+
 }
 
 @SerialVersionUID(1L)
 class FraudDetector extends KeyedProcessFunction[Long, Transaction, Alert] {
 
+  import FraudDetector._
+
   @transient private var lastTransactionSmallFlagState: ValueState[java.lang.Boolean] = _
+  @transient private var timerState: ValueState[java.lang.Long] = _
+
+  private def valueState[V](name: String, clazz: Class[V]) =
+    getRuntimeContext.getState(new ValueStateDescriptor[V](name, clazz))
 
   @throws[Exception]
   override def open(parameters: Configuration): Unit = {
-    val flagDescriptor = new ValueStateDescriptor("lastTransactionSmallFlag", Types.BOOLEAN)
-    lastTransactionSmallFlagState = getRuntimeContext.getState(flagDescriptor)
+    lastTransactionSmallFlagState = valueState("lastTransactionSmallFlag", classOf[java.lang.Boolean])
+    timerState = valueState("timerState", classOf[java.lang.Long])
   }
 
   @throws[Exception]
@@ -48,12 +64,32 @@ class FraudDetector extends KeyedProcessFunction[Long, Transaction, Alert] {
       transaction: Transaction,
       context: KeyedProcessFunction[Long, Transaction, Alert]#Context,
       collector: Collector[Alert]): Unit = {
-    val lastTransactionSmall: java.lang.Boolean = Option(lastTransactionSmallFlagState.value).getOrElse(false)
-    if (lastTransactionSmall && transaction.getAmount > FraudDetector.LARGE_AMOUNT_THRESHOLD) {
-      val alert = new Alert
-      alert.setId(transaction.getAccountId)
-      collector.collect(alert)
+    if(lastTransactionSmallFlagState.value != null) {
+      if (transaction.isLarge) { collector.collect(transaction.createAlert) }
+      cleanUp(context)
     }
-    lastTransactionSmallFlagState.update(transaction.getAmount < FraudDetector.SMALL_AMOUNT_THRESHOLD)
+    if (transaction.isSmall) {
+      val timer = context.timerService.currentProcessingTime + ONE_MINUTE
+      context.timerService.registerProcessingTimeTimer(timer)
+      timerState.update(timer)
+      lastTransactionSmallFlagState.update(true)
+    }
   }
+
+  override def onTimer
+  (
+    timestamp: Long,
+    ctx: KeyedProcessFunction[Long, Transaction, Alert]#OnTimerContext,
+    out: Collector[Alert]
+  ): Unit = {
+    timerState.clear()
+    lastTransactionSmallFlagState.clear()
+  }
+
+  private def cleanUp(ctx: KeyedProcessFunction[Long, Transaction, Alert]#Context): Unit = {
+    ctx.timerService.deleteProcessingTimeTimer(timerState.value)
+    timerState.clear()
+    lastTransactionSmallFlagState.clear()
+  }
+
 }
