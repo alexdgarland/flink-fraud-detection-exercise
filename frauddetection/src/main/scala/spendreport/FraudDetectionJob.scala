@@ -24,9 +24,6 @@ import org.apache.flink.walkthrough.common.entity.Alert
 import org.apache.flink.walkthrough.common.entity.Transaction
 import org.apache.flink.walkthrough.common.source.TransactionSource
 
-/**
-  * Skeleton code for the DataStream code walkthrough
-  */
 object FraudDetectionJob {
 
   @throws[Exception]
